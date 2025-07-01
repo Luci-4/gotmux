@@ -11,6 +11,9 @@ import (
 	"github.com/charmbracelet/x/conpty"
 )
 
+var currentPty *conpty.ConPty
+var currentHandle syscall.Handle
+var detached bool = false
 
 func createConPty(width, height int) (*conpty.ConPty, error) {
 	pty, err := conpty.New(width, height, 0)
@@ -48,53 +51,10 @@ func writeCommand(pty *conpty.ConPty, cmd string) error {
 }
 
 
-func handleIO(pty *conpty.ConPty, inputChan chan string) {
-    buf := make([]byte, 4096)
 
-    go func() {
-        for {
-            n, err := pty.Read(buf)
-            if err != nil {
-                if err != io.EOF {
-                    log.Printf("Read error: %v", err)
-                }
-                return
-            }
-            if n > 0 {
-                os.Stdout.Write(buf[:n])
-            }
-        }
-    }()
-
-    for {
-        input, ok := <-inputChan
-        if !ok {
-            log.Println("Input channel closed")
-            return
-        }
-        err := writeCommand(pty, input+"\n")
-        if err != nil {
-            log.Printf("write error: %v", err)
-            return
-        }
-    }
-}
-
-func runNewCMD() error {
-    pty, err := createConPty(80, 30)
-    if err != nil {
-        return err
-    }
-    defer pty.Close()
-
-    attr := setupChildProcess(pty)
-
-    // _, handle, err := spawnProcess(pty, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", attr)
-    _, handle, err := spawnProcess(pty, "C:\\Windows\\System32\\cmd.exe", attr)
-
-    if err != nil {
-        return err
-    }
+func runCurrentSession(isNew bool) error {
+	pty := currentPty
+	handle := currentHandle
     defer syscall.CloseHandle(syscall.Handle(handle))
 
 	go func() {
@@ -114,16 +74,32 @@ func runNewCMD() error {
 	}()
 
 	scanner := bufio.NewReader(os.Stdin)
+
+	if !isNew {
+		_, err := pty.Write([]byte("\r"))
+		if err != nil {
+			return fmt.Errorf("writing to PTY failed: %w", err)
+		}
+	}
 	for {
 		input, err := scanner.ReadString('\n')
 		if err != nil {
 			return fmt.Errorf("reading stdin failed: %w", err)
 		}
 
-		if strings.TrimSpace(input) == "exit" {
-			fmt.Println("Exiting PowerShell session...")
-			break
-		}
+		input_trimmed := strings.TrimSpace(input) 
+		switch input_trimmed {
+		case "exit":
+			fmt.Println("Exiting session...")
+			return nil
+
+		case "gotmux":
+			fmt.Println("Detaching from session...")
+            detached = true
+			currentPty = pty
+			currentHandle = syscall.Handle(handle)
+			return nil
+		} 
 
 		_, err = pty.Write([]byte(strings.TrimSpace(input) + "\r"))
 		if err != nil {
@@ -131,6 +107,33 @@ func runNewCMD() error {
 		}
 	}
 
+	return nil
+
+}
+
+func runNewCMD() error {
+    pty, err := createConPty(80, 30)
+    if err != nil {
+        return err
+    }
+	currentPty = pty
+
+    attr := setupChildProcess(pty)
+
+    // _, handle, err := spawnProcess(pty, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", attr)
+    _, handle, err := spawnProcess(pty, "C:\\Windows\\System32\\cmd.exe", attr)
+
+    if err != nil {
+        return err
+    }
+	currentHandle = syscall.Handle(handle)
+	defer func() {
+		if !detached {
+			pty.Close()
+			syscall.CloseHandle(currentHandle)
+		}
+	}()
+	runCurrentSession(true)
 	return nil
 }
 
@@ -153,12 +156,24 @@ func main() {
 
         switch input {
         case "runCMD":
-			fmt.Println("Starting PowerShell session. Type 'exit' to quit.")
+			fmt.Println("Starting session. Type 'exit' to quit.")
 			err := runNewCMD()
 			if err != nil {
-				log.Printf("Error running PowerShell: %v", err)
+				log.Printf("Error running session: %v", err)
 			}
-			fmt.Println("PowerShell session ended.")
+			fmt.Println("Session ended.")
+		case "reattach":
+			if currentPty == nil || currentHandle == 0 {
+				fmt.Println("No detached session to attach to.")
+				break
+			}
+
+			fmt.Println("Reattaching to detached session. Type 'gotmux' to detach again, or 'exit' to terminate.")
+			detached = false
+			err := runCurrentSession(false)
+			if err != nil {
+				log.Printf("Error reattaching session: %v", err)
+			}
         default:
             fmt.Println("Unknown command")
         }
