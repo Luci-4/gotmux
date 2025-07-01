@@ -11,9 +11,17 @@ import (
 	"github.com/charmbracelet/x/conpty"
 )
 
-var currentPty *conpty.ConPty
-var currentHandle syscall.Handle
-var detached bool = false
+// var currentPty *conpty.ConPty
+// var currentHandle syscall.Handle
+// var detached bool = false
+type Session struct {
+	Pty *conpty.ConPty
+	Handle syscall.Handle
+	Detached bool
+
+}
+
+var currentSession Session
 
 func createConPty(width, height int) (*conpty.ConPty, error) {
 	pty, err := conpty.New(width, height, 0)
@@ -53,30 +61,29 @@ func writeCommand(pty *conpty.ConPty, cmd string) error {
 
 
 func runCurrentSession(isNew bool) error {
-	pty := currentPty
-	handle := currentHandle
-    defer syscall.CloseHandle(syscall.Handle(handle))
 
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := pty.Read(buf)
+			n, err := currentSession.Pty.Read(buf)
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("PTY read error: %v", err)
+					fmt.Errorf("PTY read error: %v", err)
+					//TODO: log errors somehow
 				}
 				return
 			}
 			if n > 0 {
 				os.Stdout.Write(buf[:n])
 			}
+
 		}
 	}()
 
 	scanner := bufio.NewReader(os.Stdin)
 
 	if !isNew {
-		_, err := pty.Write([]byte("\r"))
+		_, err := currentSession.Pty.Write([]byte("\r"))
 		if err != nil {
 			return fmt.Errorf("writing to PTY failed: %w", err)
 		}
@@ -91,17 +98,20 @@ func runCurrentSession(isNew bool) error {
 		switch input_trimmed {
 		case "exit":
 			fmt.Println("Exiting session...")
+   			syscall.CloseHandle(syscall.Handle(currentSession.Handle))
+			currentSession.Pty.Close()
+			currentSession.Detached = false
+			currentSession.Pty = nil
+			currentSession.Handle = 0
 			return nil
 
 		case "gotmux":
 			fmt.Println("Detaching from session...")
-            detached = true
-			currentPty = pty
-			currentHandle = syscall.Handle(handle)
+			currentSession.Detached = true
 			return nil
 		} 
 
-		_, err = pty.Write([]byte(strings.TrimSpace(input) + "\r"))
+		_, err = currentSession.Pty.Write([]byte(strings.TrimSpace(input) + "\r"))
 		if err != nil {
 			return fmt.Errorf("writing to PTY failed: %w", err)
 		}
@@ -116,9 +126,9 @@ func runNewCMD() error {
     if err != nil {
         return err
     }
-	currentPty = pty
+	currentSession.Pty = pty
 
-    attr := setupChildProcess(pty)
+    attr := setupChildProcess(currentSession.Pty)
 
     // _, handle, err := spawnProcess(pty, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", attr)
     _, handle, err := spawnProcess(pty, "C:\\Windows\\System32\\cmd.exe", attr)
@@ -126,13 +136,7 @@ func runNewCMD() error {
     if err != nil {
         return err
     }
-	currentHandle = syscall.Handle(handle)
-	defer func() {
-		if !detached {
-			pty.Close()
-			syscall.CloseHandle(currentHandle)
-		}
-	}()
+	currentSession.Handle = syscall.Handle(handle)
 	runCurrentSession(true)
 	return nil
 }
@@ -163,13 +167,13 @@ func main() {
 			}
 			fmt.Println("Session ended.")
 		case "reattach":
-			if currentPty == nil || currentHandle == 0 {
+			if currentSession.Pty == nil || currentSession.Handle == 0 {
 				fmt.Println("No detached session to attach to.")
 				break
 			}
 
 			fmt.Println("Reattaching to detached session. Type 'gotmux' to detach again, or 'exit' to terminate.")
-			detached = false
+			currentSession.Detached = false
 			err := runCurrentSession(false)
 			if err != nil {
 				log.Printf("Error reattaching session: %v", err)
