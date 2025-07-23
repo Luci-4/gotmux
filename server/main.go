@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	inputPipeName  = `\\.\pipe\gotmux_input`
-	outputPipeName = `\\.\pipe\gotmux_output`
-	controlPipeName = `\\.\pipe\gotmux_control`
+	inputPipeName  = `\\.\pipe\win_tmux_input`
+	outputPipeName = `\\.\pipe\win_tmux_output`
+	controlPipeName = `\\.\pipe\win_tmux_control`
 )
 
 var (
@@ -145,17 +145,25 @@ func startNewTerminal() {
 func startNamedPipeCommunication() error {
     var err error
 
+    err = startControlPipe()
+
+    if err != nil {
+        return err
+    }
+
     inListener, err = winio.ListenPipe(inputPipeName, nil)
     if err != nil {
         return err
     }
 
-    outListener, err = winio.ListenPipe(outputPipeName, nil)
+    log.Println("Waiting for client to connect to input pipe...")
+    inConn, err = inListener.Accept()
     if err != nil {
         return err
     }
+    log.Println("Client connected to input pipe")
 
-    err = startControlPipe()
+    outListener, err = winio.ListenPipe(outputPipeName, nil)
     if err != nil {
         return err
     }
@@ -166,13 +174,6 @@ func startNamedPipeCommunication() error {
         return err
     }
     log.Println("Client connected to output pipe")
-
-    log.Println("Waiting for client to connect to input pipe...")
-    inConn, err = inListener.Accept()
-    if err != nil {
-        return err
-    }
-    log.Println("Client connected to input pipe")
 
     return nil
 }
@@ -192,6 +193,7 @@ func startControlPipe() error {
 
     log.Println("Client connected to control pipe")
     return nil
+
 }
 
 func controlCommandLoop() {
