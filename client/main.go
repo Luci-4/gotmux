@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/term"
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -30,8 +31,27 @@ func dialPipeWithRetry(pipeName string, maxRetries int, delay time.Duration) (ne
 	}
 	return nil, err
 }
+func enableVirtualTerminalProcessing() error {
+    handle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+    if err != nil {
+        return err
+    }
+    
+    var mode uint32
+    err = windows.GetConsoleMode(handle, &mode)
+    if err != nil {
+        return err
+    }
+    
+    mode |= windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    return windows.SetConsoleMode(handle, mode)
+}
+
 
 func main() {
+    if err := enableVirtualTerminalProcessing(); err != nil {
+        log.Printf("Warning: failed to enable VT processing: %v", err)
+    }
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		log.Fatalf("failed to set terminal raw mode: %v", err)
